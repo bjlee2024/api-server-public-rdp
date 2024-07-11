@@ -109,52 +109,100 @@ resource "aws_launch_template" "api_server" {
     name = aws_iam_instance_profile.pointcloud_ec2_profile.name
   }
   
-  block_device_mappings {
-    device_name = "/dev/sda1"
-    ebs {
-      volume_size = 60
-      delete_on_termination = true
-      volume_type = "gp2"
-    }
-  }
+  # block_device_mappings {
+  #   device_name = "/dev/sda1"
+  #   ebs {
+  #     volume_size = 60
+  #     delete_on_termination = true
+  #     volume_type = "gp2"
+  #   }
+  # }
 
   user_data = base64encode(<<-EOF
-              <powershell>
-              # Install CloudWatch agent (Already installed in the custom AMI)
-              #$cloudwatch_agent_url = "https://s3.amazonaws.com/amazoncloudwatch-agent/windows/amd64/latest/amazon-cloudwatch-agent.msi"
-              #Invoke-WebRequest -Uri $cloudwatch_agent_url -OutFile "C:\amazon-cloudwatch-agent.msi"
-              #Start-Process msiexec.exe -Wait -ArgumentList '/i C:\amazon-cloudwatch-agent.msi /qn'
+<powershell>
+              Start-Transcript -Path C:\userdata_execution.log
 
-              # Configure CloudWatch agent
-              $config = @{
-                  logs = @{
-                      logs_collected = @{
-                          files = @{
-                              collect_list = @(
-                                  @{
-                                      file_path = "C:\\MeditAutoTest\\logs\\*.log"
-                                      log_group_name = "/ec2/api-server-logs"
-                                      log_stream_name = "{instance_id}"
-                                      timezone = "UTC"
-                                  }
-                              )
+              try {
+                  # Function to check if a command exists
+                  function Test-Command($cmdname) {
+                      return [bool](Get-Command -Name $cmdname -ErrorAction SilentlyContinue)
+                  }
+
+                  # Check if Python is installed
+                  if (-not (Test-Command python)) {
+                      Write-Host "Python is not installed. Installing Python..."
+                      
+                      # Download Python installer
+                      $pythonUrl = "https://www.python.org/ftp/python/3.9.7/python-3.9.7-amd64.exe"
+                      $installerPath = "$env:TEMP\python-installer.exe"
+                      Invoke-WebRequest -Uri $pythonUrl -OutFile $installerPath
+
+                      # Install Python silently
+                      Start-Process -FilePath $installerPath -ArgumentList "/quiet", "InstallAllUsers=1", "PrependPath=1" -Wait
+                      
+                      # Remove the installer
+                      Remove-Item -Path $installerPath -Force
+
+                      # Refresh environment variables
+                      $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+
+                      Write-Host "Python has been installed."
+                  } else {
+                      Write-Host "Python is already installed."
+                  }
+
+                  # Install AWS Tools for PowerShell if not already installed
+                  if (-not (Get-Module -ListAvailable -Name AWSPowerShell)) {
+                      Install-Module -Name AWSPowerShell -Force -AllowClobber
+                  }
+
+                  Import-Module AWSPowerShell
+
+                  # Configure CloudWatch agent
+                  $config = @{
+                      logs = @{
+                          logs_collected = @{
+                              files = @{
+                                  collect_list = @(
+                                      @{
+                                          file_path = "C:\MeditAutoTest\logs\*.log"
+                                          log_group_name = "/ec2/api-server-logs"
+                                          log_stream_name = "{instance_id}"
+                                          timezone = "UTC"
+                                      }
+                                  )
+                              }
                           }
                       }
                   }
+                  $config | ConvertTo-Json -Depth 4 | Out-File -Encoding utf8 -FilePath "C:\cloudwatch-config.json"
+
+                  # Start CloudWatch agent
+                  & "C:\Program Files\Amazon\AmazonCloudWatchAgent\amazon-cloudwatch-agent-ctl.ps1" -a fetch-config -m ec2 -c file:"C:\cloudwatch-config.json" -s
+
+                  # Download api.py from S3
+                  $s3bucket = "${var.s3_bucket_name}"
+                  $s3key = "${var.s3_key}"
+                  Read-S3Object -BucketName $s3bucket -Key $s3key -File C:\MeditAutoTest\api.py
+
+                  # Create a scheduled task to start the API server on system startup
+                  $action = New-ScheduledTaskAction -Execute "python" -Argument "C:\MeditAutoTest\api.py"
+                  $trigger = New-ScheduledTaskTrigger -AtStartup
+                  $principal = New-ScheduledTaskPrincipal -UserID "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+                  Register-ScheduledTask -TaskName "StartAPIServer" -Action $action -Trigger $trigger -Principal $principal -Description "Start API server on system startup"
+
+                  # Start the API server immediately
+                  Start-ScheduledTask -TaskName "StartAPIServer"
+
+                  Write-Host "User data script execution completed successfully."
               }
-              $config | ConvertTo-Json -Depth 4 | Out-File -Encoding utf8 -FilePath "C:\cloudwatch-config.json"
-
-              # Start CloudWatch agent
-              & "C:\Program Files\Amazon\AmazonCloudWatchAgent\amazon-cloudwatch-agent-ctl.ps1" -a fetch-config -m ec2 -c file:"C:\cloudwatch-config.json" -s
-              
-              # Download and extract the code
-              $s3bucket = "${var.s3_bucket_name}"
-              $s3key    = "${var.s3_key}"
-              #(New-Object -TypeName System.Net.WebClient).DownloadFile("XXXXXXXXXXXXXXXXXXXXXXXXX$s3bucket/$s3key", "C:\MeditAutoTest.zip")
-              Read-S3Object -BucketName $s3bucket -Key $s3key -File C:\MeditAutoTest\api.py
-
-              # Start the API server
-              #Start-Process python -ArgumentList "C:\MeditAutoTest\api.py"
+              catch {
+                  Write-Host "An error occurred during user data script execution: $_"
+                  $_ | Out-File -FilePath C:\userdata_error.log
+              }
+              finally {
+                  Stop-Transcript
+              }
               </powershell>
               EOF
   )
