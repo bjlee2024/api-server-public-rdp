@@ -11,7 +11,14 @@ variable "profile" {
 variable "custom_ami_id" {
   description = "The name of the custom AMI to use"
   type        = string
-  default     = "ami-0e0c3c4ce28132149"
+  default     = "ami-0b974a2f26d4dad47"
+}
+
+variable "custome_snap_id" {
+  description = "The name of the custom snapshot to use"
+  type        = string
+  default     = "snap-0ede3736964b134b9"
+  
 }
 
 variable "ec2_key_name" {

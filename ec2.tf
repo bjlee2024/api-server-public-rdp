@@ -93,33 +93,34 @@ resource "aws_s3_object" "api_py" {
 
 # Launch template
 resource "aws_launch_template" "api_server" {
-  name                   = "api_server_template"
-  image_id               = var.custom_ami_id
-  instance_type          = var.instance_type
-  key_name               = var.ec2_key_name
-  depends_on             = [aws_s3_object.api_py]
+  name          = "api_server_template"
+  image_id      = var.custom_ami_id
+  instance_type = var.instance_type
+  key_name      = var.ec2_key_name
+  depends_on    = [aws_s3_object.api_py, aws_iam_instance_profile.pointcloud_ec2_profile]
 
   network_interfaces {
     associate_public_ip_address = true
     subnet_id                   = var.subnet_ids[0]
-    security_groups = [aws_security_group.ec2_sg.id]
+    security_groups             = [aws_security_group.ec2_sg.id]
   }
 
   iam_instance_profile {
     name = aws_iam_instance_profile.pointcloud_ec2_profile.name
   }
-  
+
   # block_device_mappings {
   #   device_name = "/dev/sda1"
   #   ebs {
-  #     volume_size = 60
+  #     snapshot_id = var.custome_snap_id
+  #     # volume_size = 60
   #     delete_on_termination = true
-  #     volume_type = "gp2"
+  #     # volume_type = "gp2"
   #   }
   # }
 
   user_data = base64encode(<<-EOF
-<powershell>
+              <powershell>
               Start-Transcript -Path C:\userdata_execution.log
 
               try {
@@ -157,28 +158,53 @@ resource "aws_launch_template" "api_server" {
                   }
 
                   Import-Module AWSPowerShell
+                  
+                  # CloudWatch Agent 
+                  # $cloudWatchAgentUrl = "https://s3.amazonaws.com/amazoncloudwatch-agent/windows/amd64/latest/amazon-cloudwatch-agent.msi"
+                  # $installerPath = "$env:TEMP\amazon-cloudwatch-agent.msi"
+
+                  # Write-Host "Downloading CloudWatch Agent..."
+                  # Invoke-WebRequest -Uri $cloudWatchAgentUrl -OutFile $installerPath
+
+                  # Write-Host "Installing CloudWatch Agent..."
+                  # Start-Process msiexec.exe -ArgumentList "/i $installerPath /qn" -Wait
+
+                  # Check Installation
+                  # $cloudWatchAgentPath = "C:\Program Files\Amazon\AmazonCloudWatchAgent\amazon-cloudwatch-agent.exe"
+                  # if (Test-Path $cloudWatchAgentPath) {
+                  #     Write-Host "CloudWatch Agent 설치 완료"
+                  # } else {
+                  #     Write-Error "CloudWatch Agent 설치 실패"
+                  #     Exit 1
+                  # }
 
                   # Configure CloudWatch agent
-                  $config = @{
-                      logs = @{
-                          logs_collected = @{
-                              files = @{
-                                  collect_list = @(
-                                      @{
-                                          file_path = "C:\MeditAutoTest\logs\*.log"
-                                          log_group_name = "/ec2/api-server-logs"
-                                          log_stream_name = "{instance_id}"
-                                          timezone = "UTC"
-                                      }
-                                  )
-                              }
-                          }
-                      }
-                  }
-                  $config | ConvertTo-Json -Depth 4 | Out-File -Encoding utf8 -FilePath "C:\cloudwatch-config.json"
+                  # $config = @{
+                  #     logs = @{
+                  #         logs_collected = @{
+                  #             files = @{
+                  #                 collect_list = @(
+                  #                     @{
+                  #                         file_path = "C:\MeditAutoTest\logs\*.log"
+                  #                         log_group_name = "/ec2/pointcloud/api-server-logs"
+                  #                         log_stream_name = "{instance_id}"
+                  #                         timezone = "UTC"
+                  #                     }
+                  #                     @{
+                  #                         file_path = "C:\userdata_execution.log"
+                  #                         log_group_name = "/ec2/pointcloud/userdata"
+                  #                         log_stream_name = "{instance_id}"
+                  #                         timezone = "UTC"
+                  #                     }
+                  #                 )
+                  #             }
+                  #         }
+                  #     }
+                  # }
+                  # $config | ConvertTo-Json -Depth 4 | Out-File -Encoding utf8 -FilePath "C:\cloudwatch-config.json"
 
-                  # Start CloudWatch agent
-                  & "C:\Program Files\Amazon\AmazonCloudWatchAgent\amazon-cloudwatch-agent-ctl.ps1" -a fetch-config -m ec2 -c file:"C:\cloudwatch-config.json" -s
+                  # # Start CloudWatch agent
+                  # & "C:\Program Files\Amazon\AmazonCloudWatchAgent\amazon-cloudwatch-agent-ctl.ps1" -a fetch-config -m ec2 -c file:"C:\cloudwatch-config.json" -s
 
                   # Download api.py from S3
                   $s3bucket = "${var.s3_bucket_name}"
@@ -214,7 +240,7 @@ resource "aws_instance" "pointcloud_server" {
     id      = aws_launch_template.api_server.id
     version = "$Latest"
   }
-  
+
   tags = {
     Name = "pointcloud_server"
   }
