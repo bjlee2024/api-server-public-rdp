@@ -11,15 +11,14 @@ variable "profile" {
 variable "custom_ami_id" {
   description = "The name of the custom AMI to use"
   type        = string
-  default     = "ami-0b974a2f26d4dad47"
+  default     = "ami-07fa1feb7764d7ae2"
 }
 
-variable "custome_snap_id" {
-  description = "The name of the custom snapshot to use"
-  type        = string
-  default     = "snap-0ede3736964b134b9"
-  
-}
+# variable "custome_snap_id" {
+#   description = "The name of the custom snapshot to use"
+#   type        = string
+#   default     = "snap-0ede3736964b134b9"
+# }
 
 variable "ec2_key_name" {
   description = "The name of the EC2 key pair to use"
@@ -62,7 +61,7 @@ variable "min_size" {
 variable "subnet_ids" {
   description = "The subnet IDs to deploy the EC2 instances into"
   type        = list(string)
-  default     = ["subnet-004f4d83cf888e96d", "subnet-09fcd95b4cbf24f13"]
+  default     = ["subnet-004f4d83cf888e96d"]
 }
 
 variable "vpc_id" {
@@ -74,7 +73,7 @@ variable "vpc_id" {
 variable "ingress_cidr_blocks" {
   description = "The CIDR blocks to allow ingress traffic from"
   type        = list(string)
-  default     = ["1.223.27.37/32"]
+  default     = ["1.223.27.37/32", "110.10.15.38/32"]
 }
 
 variable "processing_time_threshold" {

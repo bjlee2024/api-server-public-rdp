@@ -9,15 +9,80 @@ from logging.handlers import TimedRotatingFileHandler
 import threading
 from botocore.exceptions import ClientError
 import urllib.request
-import json
 import shutil
 
 app = Flask(__name__)
 
+# Configuration for logging
+logger = logging.getLogger("ImageProcessing")
+logger.setLevel(logging.INFO)
+
+# Get Region from EC2 instance's metadata
+def get_instance_region():
+    try:
+        with urllib.request.urlopen("http://169.254.169.254/latest/meta-data/placement/region", timeout=1) as response:
+            return response.read().decode('utf-8')
+    except urllib.error.URLError:
+        logger.error("Failed to retrieve instance region from metadata")
+        return None
+
+def get_instance_id():
+    try:
+        with urllib.request.urlopen("http://169.254.169.254/latest/meta-data/instance-id", timeout=1) as response:
+            return response.read().decode('utf-8')
+    except urllib.error.URLError:
+        logger.error("Failed to retrieve instance id from metadata")
+        return None
+
+region = get_instance_region()
+instance_id = get_instance_id()
+
+# Get temporary credentials from EC2 instance metadata
+def get_instance_credentials():
+    try:
+        with urllib.request.urlopen("http://169.254.169.254/latest/meta-data/iam/security-credentials/", timeout=1) as response:
+            role_name = response.read().decode('utf-8')
+        
+        with urllib.request.urlopen(f"http://169.254.169.254/latest/meta-data/iam/security-credentials/{role_name}", timeout=1) as response:
+            credentials = json.loads(response.read().decode('utf-8'))
+        return credentials
+    except urllib.error.URLError:
+        logger.error("Failed to retrieve instance credentials from metadata")
+        return None
+
+# Create boto3 session using region information and temporary credentials
+def create_boto3_session():
+    credentials = get_instance_credentials()
+    
+    if region and credentials:
+        session = boto3.Session(
+            aws_access_key_id=credentials['AccessKeyId'],
+            aws_secret_access_key=credentials['SecretAccessKey'],
+            aws_session_token=credentials['Token'],
+            region_name=region
+        )
+        return session
+    else:
+        logger.error("Failed to create boto3 session")
+        return None
+
+# boto3 session
+session = create_boto3_session()
+
+if session:
+    s3 = session.client("s3")
+    cloudwatch = session.client('cloudwatch')
+    cloudwatch_logs = session.client('logs')
+else:
+    logger.error("Failed to initialize AWS clients")
+    s3 = None
+    cloudwatch = None
+    cloudwatch_logs = None
+
+
 # Configuration for CloudWatch Client
-cloudwatch_logs = boto3.client('logs')
-log_group_name = '/medit-auto-test/api-logs'
-log_stream_name = f'api-log-stream-{int(time.time())}'
+log_group_name = '/pointcloud-auto-test/api-logs'
+log_stream_name = f'api-log-stream-{instance_id}-{int(time.time())}'
 
 try:
     cloudwatch_logs.create_log_group(logGroupName=log_group_name)
@@ -63,18 +128,12 @@ class CloudWatchLogsHandler(logging.Handler):
             else:
                 print(f"Failed to send logs to CloudWatch: {e}", file=sys.stderr)
 
-# Configuration for logging
-logger = logging.getLogger("ImageProcessing")
-logger.setLevel(logging.INFO)
 
-# File Handler for logger (Optional for local debugging)
-#log_dir = "C:\\MeditAutoTest\\logs"
-#os.makedirs(log_dir, exist_ok=True)
-#log_file = os.path.join(log_dir, "image_processing.log")
-#file_handler = TimedRotatingFileHandler(log_file, when="midnight", interval=1, backupCount=7)
-#file_formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-#file_handler.setFormatter(file_formatter)
-#logger.addHandler(file_handler)
+# File Handler for launch template's log(Optional for local debugging)
+file_handler = TimedRotatingFileHandler("C:\\userdata_execution.log", when="midnight", interval=1, backupCount=7)
+file_formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+file_handler.setFormatter(file_formatter)
+logger.addHandler(file_handler)
 
 # CloudWatch Handler for logger
 cloudwatch_handler = CloudWatchLogsHandler(log_group_name, log_stream_name)
@@ -85,56 +144,6 @@ logger.addHandler(cloudwatch_handler)
 # Very simple dictionary for job status and time
 job_status = {}
 job_start_times = {}
-
-# Get Region from EC2 instance's metadata
-def get_instance_region():
-    try:
-        with urllib.request.urlopen("http://169.254.169.254/latest/meta-data/placement/region", timeout=1) as response:
-            return response.read().decode('utf-8')
-    except urllib.error.URLError:
-        logger.error("Failed to retrieve instance region from metadata")
-        return None
-
-# Get temporary credentials from EC2 instance metadata
-def get_instance_credentials():
-    try:
-        with urllib.request.urlopen("http://169.254.169.254/latest/meta-data/iam/security-credentials/", timeout=1) as response:
-            role_name = response.read().decode('utf-8')
-        
-        with urllib.request.urlopen(f"http://169.254.169.254/latest/meta-data/iam/security-credentials/{role_name}", timeout=1) as response:
-            credentials = json.loads(response.read().decode('utf-8'))
-        return credentials
-    except urllib.error.URLError:
-        logger.error("Failed to retrieve instance credentials from metadata")
-        return None
-
-# Create boto3 session using region information and temporary credentials
-def create_boto3_session():
-    region = get_instance_region()
-    credentials = get_instance_credentials()
-    
-    if region and credentials:
-        session = boto3.Session(
-            aws_access_key_id=credentials['AccessKeyId'],
-            aws_secret_access_key=credentials['SecretAccessKey'],
-            aws_session_token=credentials['Token'],
-            region_name=region
-        )
-        return session
-    else:
-        logger.error("Failed to create boto3 session")
-        return None
-
-# boto3 session
-session = create_boto3_session()
-
-if session:
-    s3 = session.client("s3")
-    cloudwatch = session.client('cloudwatch')
-else:
-    logger.error("Failed to initialize AWS clients")
-    s3 = None
-    cloudwatch = None
 
 def download_from_s3(s3_uri, local_path):
     if not s3:
@@ -214,6 +223,7 @@ def upload_to_s3(local_path, s3_uri):
 
 def process_images(job_id, config):
     try:
+        logger.info(f"Current working directory: {os.getcwd()}")
         logger.info(f"Starting image processing task for job {job_id}")
         job_status[job_id] = "processing"
         job_start_times[job_id] = time.time()
@@ -228,21 +238,21 @@ def process_images(job_id, config):
         config["Source Folder Path"] = local_source_path
         config["Target Folder Path"] = local_target_path
 
+        logger.info(f"config.json : {config}")
+
         config_path = os.path.join(local_source_path, "config.json")
         with open(config_path, "w") as f:
             json.dump(config, f)
 
         start_time = time.time()
 
-        logger.info(f"Current working directory: {os.getcwd()}")
-
-        args = r'--iScanComplete \"{config_path}\"'
-        logger.info(f"Attempting to run command with args: {args}")
+        logger.info(f"Attempting to run command with config: {config_path}")
         
         process = subprocess.Popen(
             ["Medit_AutoTest.exe", "--iScanComplete", config_path], 
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            cwd="C:\\MeditAutoTest\\9999.0.0.4514_Release",
             )
 
         for line in process.stdout:
@@ -257,7 +267,7 @@ def process_images(job_id, config):
 
         duration = end_time - start_time
         logger.info(f"Image processing completed in {duration:.2f} seconds for job {job_id}")
-        
+
         if cloudwatch:
             cloudwatch.put_metric_data(
                 Namespace='CustomMetrics',
@@ -265,7 +275,18 @@ def process_images(job_id, config):
                     {
                         'MetricName': 'ProcessingDuration',
                         'Value': duration,
-                        'Unit': 'Seconds'
+                        'Unit': 'Seconds',
+                        'Dimensions': [
+                            {
+                                'Name': 'InstanceId',
+                                'Value': instance_id 
+                            },
+                            {
+                                'Name': 'JobId',
+                                'Value': job_id
+                            }
+                        ]
+                        
                     },
                 ]
             )
@@ -277,6 +298,7 @@ def process_images(job_id, config):
         logger.error(f"Error processing job {job_id}: {str(e)}")
         job_status[job_id] = "failed"
     finally:
+        job_status.pop(job_id, None)
         job_start_times.pop(job_id, None)
         try:
             shutil.rmtree(local_source_path)
