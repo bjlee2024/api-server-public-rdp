@@ -1,7 +1,22 @@
+# Description: This script is used to create a Flask API for pointcloud image processing tasks.
+# The API has the following endpoints:
+# 1. POST /process: This endpoint is used to start a new image processing task. The request body should contain a JSON object with the following keys
+#    - "Source Folder Path": S3 URI of the source folder containing the images to be processed
+#    - "Target Folder Path": S3 URI of the target folder where the processed images will be saved
+#    - Other configuration parameters required for the image processing task
+#    The endpoint returns a JSON response with the job ID and status "started"
+# 2. GET /job/<job_id>: This endpoint is used to get the status of a specific job identified by the job ID
+#    The endpoint returns a JSON response with the job ID and its status
+# 3. GET /jobs: This endpoint is used to get the status of all active jobs
+#    The endpoint returns a JSON response with a list of job IDs and their statuses
+# 4. GET /status/health: This endpoint is used for AWS EC2 Health Check
+#    The endpoint returns a JSON response with the status "ready"
+
 from flask import Flask, request, jsonify
 import json
 import boto3
 import os
+import sys
 import subprocess
 import time
 import logging
@@ -156,7 +171,7 @@ def download_from_s3(s3_uri, local_path):
         
         logger.info(f"Attempting to download from bucket: {bucket_name}, prefix: {prefix}")
         
-        # 버킷 내 객체 리스트 확인 및 다운로드
+        # Check Objects in the bucket and download
         paginator = s3.get_paginator('list_objects_v2')
         count = 0
         for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix):
@@ -164,17 +179,17 @@ def download_from_s3(s3_uri, local_path):
                 for obj in page['Contents']:
                     count += 1
                     file_key = obj['Key']
-                    if file_key.endswith('/'):  # S3 콘솔에서 생성된 '폴더'는 끝에 /가 있는 객체입니다
+                    if file_key.endswith('/'):  # Folders in S3 are objects that end with / 
                         continue
                     
-                    # 로컬 파일 경로 생성
+                    # Create local file path
                     relative_path = os.path.relpath(file_key, prefix)
                     local_file_path = os.path.join(local_path, relative_path)
                     
-                    # 필요한 디렉토리 생성
+                    # Create local directories if they don't exist
                     os.makedirs(os.path.dirname(local_file_path), exist_ok=True)
                     
-                    # 파일 다운로드
+                    # Download the file
                     logger.info(f"Downloading {file_key} to {local_file_path}")
                     s3.download_file(bucket_name, file_key, local_file_path)
 
